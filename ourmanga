@@ -1,0 +1,194 @@
+#!/bin/bash
+
+BASE_DIR=`pwd`
+BASE_URL="http://ourmanga.com/manga"
+CLEAREOL="`tput el`"
+
+trap cleanup 0
+
+function cleanup() {
+    cd $BASE_DIR
+    rm -f $TMP_FILE
+    rm -rf $TMP_DIR
+}
+
+function echoes() {
+    if [[ $2 -gt 0 ]]; then
+        eval "for i in {${3:-1}..$2}; do echo -n '$1'; done"
+    fi
+}
+
+function calc() {
+    echo "scale=2; $*" | bc -q 2>/dev/null | cut -f1 -d.
+}
+
+function progressbar() {
+    width=20
+    current=$1
+    total=$2
+
+    percent=`calc "$current / $total * 100"`
+    stack=`calc "$current / $total * $width"`
+    stack=${stack:=0}
+    space=`calc "$width - $stack"`
+  
+    echoes " " ${#percent} 3
+    echo -n "$percent% ["
+    echoes "#" $stack
+    echoes " " $space
+    echo "]"
+}
+
+while getopts ":c:dlos:" op; do
+    case $op in
+        c) CHAPTER=1
+           CHAPTER_ARG="$OPTARG"
+           ;;
+        d) USE_DIR=1
+           ;;
+        l) LATEST=1
+           ;;
+        o) LOG=1
+           ;;
+        s) SEARCH=1
+           KEYWORD="$OPTARG"
+           ;;
+       \?) echo "Unknown option: -$OPTARG" >&2
+           exit 1
+           ;;
+        :) case $OPTARG in
+               c) echo "Please specify a chapter number"
+                  ;;
+               s) echo "Please specify a search keyword"
+                  ;;
+           esac
+           exit 1
+           ;;
+    esac
+done
+
+shift $(($OPTIND - 1))
+
+if [[ $CHAPTER -eq 1 && $LATEST -eq 1 ]]; then
+    echo "Invalid option: -c and -l cannot be used together" >&2
+    exit 1
+fi
+
+if [[ $CHAPTER = "" && $LATEST = "" ]]; then
+    UPDATE=1
+fi
+
+if [[ $CHAPTER -eq 1 ]]; then
+    if [[ "${CHAPTER_ARG%+*}" != "$CHAPTER_ARG" ]]; then 
+        first=${CHAPTER_ARG%+*}
+        last="+"
+    elif [[ "${CHAPTER_ARG%-*}" != "$CHAPTER_ARG" ]]; then 
+        first=${CHAPTER_ARG%-*}
+        last=${CHAPTER_ARG#*-}
+    else
+        first=$CHAPTER_ARG
+        last=$CHAPTER_ARG
+    fi
+fi
+
+if [[ $USE_DIR -eq 1 ]]; then
+    MANGA_DIR="$BASE_DIR/$manga"
+else
+    MANGA_DIR=$BASE_DIR
+fi
+
+for manga in "$@"; do
+    manga=${manga%/}
+    mkdir -p $MANGA_DIR
+# TODO simplify the way to get current chapter number
+    name=`echo $manga | sed -e "s/_/ /g" -e "s/%27/'/g"`
+    words=`echo $name | wc -w`
+    sort_key=$((words + 1))
+    current=`ls ${manga}_*.cb? 2> /dev/null | sort -r -n -k $sort_key -t_ | head -n1`
+    current=${current##*_}
+    current=${current%.*}
+# END TODO
+
+    if [[ -n $current ]]; then
+        if [[ `echo "$current == 0" | bc` -eq 0 ]]; then
+            current=`echo $current | sed "s/^0*//g"`
+        fi
+    else
+        current="none"
+    fi
+
+    TMP_FILE="$MANGA_DIR/`mktemp ourmanga.XXXXXXXX`"
+    echo -e "\nGetting list of chapters for $name"
+    wget --no-cache -qO - "$BASE_URL/$manga" | grep ^\<li | cut -f2 -d\" | grep \/$ | sed "s/\///g" | sort -n -k2 -t\- | cut -f2 -d\- | grep -v ^$ > $TMP_FILE
+
+    latest=`tail -n1 $TMP_FILE`
+
+    if [[ -n $current && ! $CHAPTER -eq 1 ]]; then
+        echo "Local chapter: ${current} / Latest chapter: ${latest}"
+        if [[ $current == $latest ]]; then
+            echo "No update."
+            cleanup
+            continue
+        fi
+    fi
+
+    if [[ $LATEST -eq 1 ]]; then
+        first=$latest
+        last=$latest
+    fi
+
+    if [[ "$last" == "+" ]]; then
+        last=$latest
+    fi
+
+    if [[ $UPDATE -eq 1 ]]; then
+        if [[ $current == "" ]]; then
+            first=`head -n1 $TMP_FILE`
+        else
+            first=`grep -A1 $current $TMP_FILE | tail -n1`
+        fi
+        last=$latest
+    fi
+
+    if [[ $CHAPTER -eq 1 || -z $current ]]; then
+        echo "From chapter: $first / To chapter: $last"
+    fi
+
+# TODO: find a better way to get chapter list
+    begin=`grep -nm1 $first $TMP_FILE | cut -f1 -d:`
+    end=`grep -nm1 $last $TMP_FILE | cut -f1 -d:`
+    CHAPTERS=`awk 'FNR >= '$begin' && FNR <= '$end $TMP_FILE`
+# END TODO
+
+    for chapter in $CHAPTERS; do
+        echo "Downloading $name $chapter"
+        echo -ne "\r$CLEAREOL`progressbar 0 1` (Initializing...)"
+
+        TMP_DIR="$MANGA_DIR/`mktemp -d ourmanga.XXXXXXXX`"
+        cd $TMP_DIR
+
+        url="$BASE_URL/$manga/Chapter-$chapter"
+        IMAGES=`wget -qO - $url | grep ^\<li | cut -f2 -d\" | grep -iE "(jpg|jpeg|png|bmp|gif)"`
+        total=`echo $IMAGES | wc -w`
+        count=0
+
+        for image in $IMAGES; do
+            wget -q "$url/$image"
+            let count++
+            echo -ne "\r$CLEAREOL`progressbar $count $total` ($count/$total)"
+        done
+
+        chapter_no=${chapter%\.*}
+        if [[ `echo "$chapter_no == 0" | bc` -eq 0 && ${#chapter_no} -lt 3 ]]; then
+            chapter=`echoes "0" ${#chapter_no} 2`$chapter
+        fi
+
+        archive="${manga}_${chapter}.cbz"
+        echo -ne "\r$CLEAREOL`progressbar $count $total` (Creating archive...)"
+        zip -q $MANGA_DIR/$archive *
+        echo -e "\r$CLEAREOL`progressbar $count $total` ($archive)"
+        cleanup
+    done
+done
+
+
