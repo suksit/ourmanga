@@ -91,20 +91,25 @@ if [[ $CHAPTER -eq 1 ]]; then
     fi
 fi
 
-if [[ $USE_DIR -eq 1 ]]; then
-    MANGA_DIR="$BASE_DIR/$manga"
-else
-    MANGA_DIR=$BASE_DIR
-fi
+TMP_FILE="$BASE_DIR/`mktemp ourmanga.XXXXXXXX`"
+TMP_DIR="$BASE_DIR/`mktemp -d ourmanga.XXXXXXXX`"
 
 for manga in "$@"; do
     manga=${manga%/}
-    mkdir -p $MANGA_DIR
+
+    if [[ $USE_DIR -eq 1 ]]; then
+        MANGA_DIR="$BASE_DIR/$manga"
+    else
+        MANGA_DIR=$BASE_DIR
+    fi
+
+    [[ ! -d $MANGA_DIR ]] && mkdir -p $MANGA_DIR
+
 # TODO simplify the way to get current chapter number
     name=`echo $manga | sed -e "s/_/ /g" -e "s/%27/'/g"`
     words=`echo $name | wc -w`
     sort_key=$((words + 1))
-    current=`ls ${manga}_*.cb? 2> /dev/null | sort -r -n -k $sort_key -t_ | head -n1`
+    current=`ls $MANGA_DIR/${manga}_*.cb? 2> /dev/null | sort -r -n -k $sort_key -t_ | head -n1`
     current=${current##*_}
     current=${current%.*}
 # END TODO
@@ -117,17 +122,16 @@ for manga in "$@"; do
         current="none"
     fi
 
-    TMP_FILE="$MANGA_DIR/`mktemp ourmanga.XXXXXXXX`"
+
     echo -e "\nGetting list of chapters for $name"
     wget --no-cache -qO - "$BASE_URL/$manga" | grep ^\<li | cut -f2 -d\" | grep \/$ | sed "s/\///g" | sort -n -k2 -t\- | cut -f2 -d\- | grep -v ^$ > $TMP_FILE
 
     latest=`tail -n1 $TMP_FILE`
 
     if [[ -n $current && ! $CHAPTER -eq 1 ]]; then
-        echo "Local chapter: ${current} / Latest chapter: ${latest}"
-        if [[ $current == $latest ]]; then
+        echo "Current chapter: ${current} / Latest chapter: ${latest}"
+        if [[ $current -ge $latest ]]; then
             echo "No update."
-            cleanup
             continue
         fi
     fi
@@ -142,10 +146,10 @@ for manga in "$@"; do
     fi
 
     if [[ $UPDATE -eq 1 ]]; then
-        if [[ $current == "" ]]; then
+        if [[ $current == "none" ]]; then
             first=`head -n1 $TMP_FILE`
         else
-            first=`grep -A1 $current $TMP_FILE | tail -n1`
+            first=`grep -A1 ^$current$ $TMP_FILE | tail -n1`
         fi
         last=$latest
     fi
@@ -160,12 +164,11 @@ for manga in "$@"; do
     CHAPTERS=`awk 'FNR >= '$begin' && FNR <= '$end $TMP_FILE`
 # END TODO
 
+    cd $TMP_DIR
+
     for chapter in $CHAPTERS; do
         echo "Downloading $name $chapter"
         echo -ne "\r$CLEAREOL`progressbar 0 1` (Initializing...)"
-
-        TMP_DIR="$MANGA_DIR/`mktemp -d ourmanga.XXXXXXXX`"
-        cd $TMP_DIR
 
         url="$BASE_URL/$manga/Chapter-$chapter"
         IMAGES=`wget -qO - $url | grep ^\<li | cut -f2 -d\" | grep -iE "(jpg|jpeg|png|bmp|gif)"`
@@ -187,7 +190,7 @@ for manga in "$@"; do
         echo -ne "\r$CLEAREOL`progressbar $count $total` (Creating archive...)"
         zip -q $MANGA_DIR/$archive *
         echo -e "\r$CLEAREOL`progressbar $count $total` ($archive)"
-        cleanup
+        rm *
     done
 done
 
