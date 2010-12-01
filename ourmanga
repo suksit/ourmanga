@@ -177,6 +177,10 @@ for manga in "$@"; do
 
         for image in $IMAGES; do
             wget -q "$url/$image"
+            extension=`file -b --mime-type $image | cut -f2 -d\/`
+            if [[ "${image#*.}" != "$extension" ]]; then
+                mv $image "${image%.*}.$extension"
+            fi
             let count++
             echo -ne "\r$CLEAREOL`progressbar $count $total` ($count/$total)"
         done
