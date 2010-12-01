@@ -1,6 +1,7 @@
 #!/bin/bash
 
 BASE_DIR=`pwd`
+LOG_FILE="$BASE_DIR/ourmanga.log"
 BASE_URL="http://ourmanga.com/manga"
 CLEAREOL="`tput el`"
 
@@ -194,6 +195,7 @@ for manga in "$@"; do
         echo -ne "\r$CLEAREOL`progressbar $count $total` (Creating archive...)"
         zip -q $MANGA_DIR/$archive *
         echo -e "\r$CLEAREOL`progressbar $count $total` ($archive)"
+        [[ $LOG -eq 1 ]] && echo "[`date +%c`] $archive" >> "$LOG_FILE"
         rm *
     done
 done
